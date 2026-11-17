@@ -1,5 +1,7 @@
-# Builds bin\DaltonicPOV.exe and every plugin (plugins\<name>\build.ps1) into bin\plugins.
+# Builds DaltonicPOV.exe into -Out (bin by default) and every plugin (plugins\<name>\build.ps1) into
+# its plugins folder.
 # Needs Visual Studio or its Build Tools with the C++ workload.
+param([string] $Out = "$PSScriptRoot\bin")
 $ErrorActionPreference = 'Stop'
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -11,14 +13,17 @@ cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
 }
 
 $n = "$PSScriptRoot\native"
-$out = "$PSScriptRoot\bin"
+$out = $Out
 New-Item -ItemType Directory -Force $out, "$out\plugins" | Out-Null
 Push-Location $out
 try {
-  rc /nologo /fo app.res "$n\app.rc"
+  rc /nologo /i "$n" /fo app.res "$n\app.rc"
   if ($LASTEXITCODE) { exit $LASTEXITCODE }
-  cl /nologo /std:c++17 /EHsc /O2 /MT /W3 "$n\app_windows.cpp" "$n\filter_windows.cpp" app.res `
-    /link d3d11.lib dxgi.lib user32.lib advapi32.lib shell32.lib /SUBSYSTEM:WINDOWS /OUT:DaltonicPOV.exe
+  # uiAccess puts the topmost overlay in z-band 2, which draws above the taskbar and its thumbnails
+  # (band 6 while the cursor rests on a thumbnail); without it the overlay stays in band 1, under them.
+  cl /nologo /std:c++17 /EHsc /O2 /MT /W3 "$n\app_windows.cpp" "$n\filter_windows.cpp" "$n\icon_windows.cpp" app.res `
+    /link d3d11.lib dxgi.lib dwmapi.lib d2d1.lib windowscodecs.lib shlwapi.lib ole32.lib user32.lib gdi32.lib advapi32.lib shell32.lib /SUBSYSTEM:WINDOWS `
+    /MANIFEST:EMBED "/MANIFESTUAC:level='asInvoker' uiAccess='true'" /OUT:DaltonicPOV.exe
   if ($LASTEXITCODE) { exit $LASTEXITCODE }
 } finally { Pop-Location }
 

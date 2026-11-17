@@ -99,7 +99,8 @@ LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    CreateMutexW(nullptr, TRUE, kClass);
+    // A test run (DALTONICPOV_MARK) lives beside the user's own copy instead of opening its menu.
+    CreateMutexW(nullptr, TRUE, envInt(L"DALTONICPOV_MARK", 0) ? L"DaltonicPOV.test" : kClass);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {  // a second start opens the first one's menu
         if (HWND first = FindWindowW(kClass, nullptr)) {
             DWORD pid;
@@ -109,6 +110,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         }
         return 0;
     }
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);  // the icon is drawn through WIC
     loadPlugins();
     WNDCLASSEXW wc{sizeof(wc)};
     wc.lpfnWndProc = wndProc, wc.hInstance = inst, wc.lpszClassName = kClass;
@@ -116,7 +118,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, kClass, kClass, WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, inst, nullptr);
     taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
     icon.hWnd = h, icon.uID = 1, icon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP, icon.uCallbackMessage = kTray;
-    icon.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));  // IDI_APPLICATION
+    icon.hIcon = dp_icon(GetSystemMetricsForDpi(SM_CXSMICON, GetDpiForSystem()));
+    if (!icon.hIcon) icon.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));  // IDI_APPLICATION
     wcsncpy_s(icon.szTip, text(ID_NAME).c_str(), _TRUNCATE);
     Shell_NotifyIconW(NIM_ADD, &icon);
     MSG msg;

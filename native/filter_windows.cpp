@@ -2,10 +2,13 @@
 // capture cannot see. Primaries and gamma come from each monitor's own EDID.
 #include <windows.h>
 #include <d3d11_1.h>
+#include <dwmapi.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 #include <atomic>
+#include <cstdarg>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -19,6 +22,27 @@ std::atomic<bool> running{false};
 std::vector<std::thread> workers;
 std::vector<std::string> reports;
 
+// One line per event to %LOCALAPPDATA%\DaltonicPOV\filter.log: what made the filter drop.
+void logLine(const char* fmt, ...) {
+    static std::mutex m;
+    std::lock_guard<std::mutex> lock(m);
+    char path[MAX_PATH];
+    if (!GetEnvironmentVariableA("LOCALAPPDATA", path, MAX_PATH)) return;
+    std::string dir = std::string(path) + "\\DaltonicPOV";
+    CreateDirectoryA(dir.c_str(), nullptr);
+    FILE* f = nullptr;
+    if (fopen_s(&f, (dir + "\\filter.log").c_str(), "a") || !f) return;
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    fprintf(f, "%02d:%02d:%02d.%03d ", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
+    va_list a;
+    va_start(a, fmt);
+    vfprintf(f, fmt, a);
+    va_end(a);
+    fputc('\n', f);
+    fclose(f);
+}
+
 LRESULT CALLBACK wndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return m == WM_ERASEBKGND ? 1 : DefWindowProcW(h, m, w, l);
 }
@@ -27,6 +51,23 @@ struct Window {  // the overlay goes away on every exit path
     HWND h = nullptr;
     ~Window() { if (h) DestroyWindow(h); }
 };
+
+// A topmost window shown later (taskbar thumbnails, tooltips, other apps) goes above the overlay and
+// stays unfiltered; put the overlay back on top before the frame is shown.
+bool keepOnTop(HWND h, const RECT& mine) {
+    for (HWND a = GetWindow(h, GW_HWNDPREV); a; a = GetWindow(a, GW_HWNDPREV)) {
+        RECT r, both;
+        BOOL cloaked = FALSE;
+        DwmGetWindowAttribute(a, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
+        if (IsWindowVisible(a) && !cloaked && GetWindowRect(a, &r) && IntersectRect(&both, &r, &mine)) {
+            char cls[64] = "";
+            GetClassNameA(a, cls, sizeof(cls));
+            logLine("raised above %s", cls);
+            return SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        }
+    }
+    return false;
+}
 
 struct Opened {  // the plugin's per-monitor state goes away on every exit path
     const dp_plugin* p;
@@ -38,7 +79,7 @@ struct Opened {  // the plugin's per-monitor state goes away on every exit path
 // without feedback); 2: corner mark, hidden from capture.
 void run(int monitor, const dp_plugin* plugin, int marker, std::string& report) {
     char buf[512];
-    auto fail = [&](const char* what) { report = std::string("error: ") + what; };
+    auto fail = [&](const char* what) { report = std::string("error: ") + what, logLine("monitor %d: %s", monitor, what); };
     ComPtr<IDXGIFactory1> f;
     CreateDXGIFactory1(IID_PPV_ARGS(&f));
     ComPtr<IDXGIAdapter1> ad;
@@ -78,7 +119,9 @@ void run(int monitor, const dp_plugin* plugin, int marker, std::string& report) 
     HWND hwnd = win.h = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
                                 wc.lpszClassName, L"", WS_POPUP, r.left, r.top, w, h, nullptr, nullptr, wc.hInstance, nullptr);
     SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
-    BOOL hidden = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+    BOOL hidden = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE), yes = TRUE;
+    HRESULT peek = DwmSetWindowAttribute(hwnd, DWMWA_EXCLUDED_FROM_PEEK, &yes, sizeof(yes));  // peek hides others
+    logLine("monitor %d: overlay up, excluded from peek 0x%08lx", monitor, peek);
     ComPtr<IDXGIFactory2> f2;
     f.As(&f2);
     DXGI_SWAP_CHAIN_DESC1 sd{(UINT)w, (UINT)h, DXGI_FORMAT_B8G8R8A8_UNORM, FALSE, {1, 0},
@@ -103,7 +146,7 @@ void run(int monitor, const dp_plugin* plugin, int marker, std::string& report) 
 
     LARGE_INTEGER freq, now;
     QueryPerformanceFrequency(&freq);
-    long frames = 0, stolen = 0, seen = 0, got = 0, empty = 0, total = 0;
+    long frames = 0, stolen = 0, seen = 0, got = 0, empty = 0, total = 0, raised = 0;
     double sum = 0, worst = 0;
     BYTE corner[4] = {};
     while (running) {
@@ -112,8 +155,14 @@ void run(int monitor, const dp_plugin* plugin, int marker, std::string& report) 
         DXGI_OUTDUPL_FRAME_INFO info;
         ComPtr<IDXGIResource> res;
         HRESULT hr = dup->AcquireNextFrame(100, &info, &res);
-        if (hr == DXGI_ERROR_WAIT_TIMEOUT) continue;
-        if (FAILED(hr)) return fail("duplication lost");
+        if (hr == DXGI_ERROR_WAIT_TIMEOUT) {  // a still screen gives no frames: keep on top anyway
+            raised += keepOnTop(hwnd, r);
+            continue;
+        }
+        if (FAILED(hr)) {
+            report = "error: duplication lost";
+            return logLine("monitor %d: duplication lost 0x%08lx", monitor, hr);
+        }
         ComPtr<ID3D11Texture2D> tex;
         res.As(&tex);
         total++, empty += info.TotalMetadataBufferSize == 0;
@@ -127,6 +176,7 @@ void run(int monitor, const dp_plugin* plugin, int marker, std::string& report) 
         ctx->RSSetViewports(1, &vp);
         plugin->frame(opened.self, srv.Get(), rtv.Get());
         if (marker && ctx1) ctx1->ClearView(rtv.Get(), magenta, &mark, 1);
+        raised += keepOnTop(hwnd, r);
         swap->Present(0, 0);
         QueryPerformanceCounter(&now);
         if (info.LastPresentTime.QuadPart) {
@@ -145,9 +195,9 @@ void run(int monitor, const dp_plugin* plugin, int marker, std::string& report) 
     snprintf(buf, sizeof(buf),
              "monitor %ls %dx%d gamma %.2f | frames %ld, capture->present mean %.1f ms, max %.1f ms | "
              "hidden from capture %d, marker seen in capture %ld | click-through %d | focus taken %ld | "
-             "acquired %ld, without changes %ld",
+             "acquired %ld, without changes %ld | raised %ld",
              od.DeviceName, w, h, gamma, frames, frames ? sum / frames : 0, worst, hidden, seen,
-             WindowFromPoint(mid) != hwnd, stolen, total, empty);
+             WindowFromPoint(mid) != hwnd, stolen, total, empty, raised);
     report = buf;
 }
 

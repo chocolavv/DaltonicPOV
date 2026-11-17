@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- An eye whose iris is red and green on the left, and on the right the same two colours as a
+       deuteranope sees them (Judd's model): two olives that are almost one. -->
+  <path d="M3 32 C13 13 51 13 61 32 C51 51 13 51 3 32 Z" fill="#ffffff" stroke="#1d2433" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M32 32 L16 32 A16 16 0 0 1 32 16 Z" fill="#e53935"/>
+  <path d="M32 32 L32 48 A16 16 0 0 1 16 32 Z" fill="#43a047"/>
+  <path d="M32 32 L32 16 A16 16 0 0 1 48 32 Z" fill="#8d7f2a"/>
+  <path d="M32 32 L48 32 A16 16 0 0 1 32 48 Z" fill="#998c4b"/>
+  <circle cx="32" cy="32" r="16" fill="none" stroke="#1d2433" stroke-width="2"/>
+  <circle cx="32" cy="32" r="6.5" fill="#1d2433"/>
+  <circle cx="35" cy="28.5" r="2.2" fill="#ffffff"/>
+</svg>

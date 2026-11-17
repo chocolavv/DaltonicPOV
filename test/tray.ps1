@@ -3,14 +3,11 @@ param([string] $Exe = "$PSScriptRoot\..\bin\DaltonicPOV.exe", [int] $Screen = 1)
 # Test hand for the tray app: the real exe, limited to one output, picks every mode the way the menu
 # does (WM_COMMAND, so the user's focus stays) and checks each state; one STEP line and PNG a step.
 $ErrorActionPreference = 'Stop'
-# A running copy owns the tray window the test talks to and locks the exe.
-if (Get-Process DaltonicPOV -ErrorAction SilentlyContinue) { Write-Output 'FAIL: DaltonicPOV is already running'; exit 1 }
 Add-Type -AssemblyName System.Drawing, System.Windows.Forms
 Add-Type @'
 using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
 public static class W {
   [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string n);
   [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   public delegate bool Each(IntPtr h, IntPtr l);
@@ -28,6 +25,15 @@ public static class W {
       if (p == pid && s.ToString() == "DaltonicFilter" && IsWindowVisible(h) && GetWindowRect(h, out r))
         found.Add(r.L + "," + r.T + "," + (r.R - r.L) + "x" + (r.B - r.T));
       return true; }, IntPtr.Zero);
+    return found;
+  }
+  public static IntPtr Tray(uint pid) {  // this app's own tray window, not another running copy's
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, l) => {
+      var s = new StringBuilder(64); uint p;
+      GetClassName(h, s, 64); GetWindowThreadProcessId(h, out p);
+      if (p == pid && s.ToString() == "DaltonicPOV") found = h;
+      return found == IntPtr.Zero; }, IntPtr.Zero);
     return found;
   }
 }
@@ -75,7 +81,7 @@ function Shot($path) {
 # One step: send a menu command, wait for the expected overlays, check and record the state.
 function Step($n, $name, $cmd, [int] $overlays) {
   $t0 = Get-Date
-  if ($cmd) { [void][W]::SendMessage([W]::FindWindow('DaltonicPOV', [NullString]::Value), 0x111, [IntPtr]$cmd, [IntPtr]::Zero) }
+  if ($cmd) { [void][W]::SendMessage([W]::Tray($app.Id), 0x111, [IntPtr]$cmd, [IntPtr]::Zero) }
   do { $o = @([W]::Overlays($app.Id)); if ($o.Count -eq $overlays) { break }; Start-Sleep -Milliseconds 100 }
   while (((Get-Date) - $t0).TotalSeconds -lt 3)
   Start-Sleep -Milliseconds 400  # the first frame reaches the overlay
@@ -88,16 +94,26 @@ function Step($n, $name, $cmd, [int] $overlays) {
 }
 
 $t0 = Get-Date
-while (-not [W]::FindWindow('DaltonicPOV', [NullString]::Value) -and ((Get-Date) - $t0).TotalSeconds -lt 5) { Start-Sleep -Milliseconds 100 }
+while (-not [W]::Tray($app.Id) -and ((Get-Date) - $t0).TotalSeconds -lt 5) { Start-Sleep -Milliseconds 100 }
 Step 0 'start' 0 0
 Step 1 'plugin-0' 100 1
-Step 2 'plugin-1' 101 1
-Step 3 'plugin-2' 102 1
-Step 4 'normal' 99 0
-[void][W]::SendMessage([W]::FindWindow('DaltonicPOV', [NullString]::Value), 0x111, [IntPtr]3, [IntPtr]::Zero)
+# A topmost window shown after the overlay, as a taskbar thumbnail is: the overlay must stay above it.
+$top = [Quiet]::new(); $top.FormBorderStyle = 'None'; $top.StartPosition = 'Manual'; $top.TopMost = $true
+$top.BackColor = 'Lime'; $top.Bounds = [System.Drawing.Rectangle]::new($s.Bounds.X + 600, $s.Bounds.Y + 300, 400, 300)
+$top.Show(); [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 400
+$b = [System.Drawing.Bitmap]::new($s.Bounds.Width, $s.Bounds.Height); $g = [System.Drawing.Graphics]::FromImage($b)
+$g.CopyFromScreen($s.Bounds.Location, [System.Drawing.Point]::Empty, $b.Size); $c = $b.GetPixel(800, 450)
+$b.Save((Join-Path $out '2-topmost.png'), [System.Drawing.Imaging.ImageFormat]::Png); $g.Dispose(); $b.Dispose(); $top.Close()
+$ok = "$($c.R),$($c.G),$($c.B)" -ne '0,255,0' -and [W]::GetForegroundWindow() -eq $fg
+if (-not $ok) { $failed++ }
+"STEP 2 topmost | window under it $($c.R),$($c.G),$($c.B) (bare 0,255,0) | focus kept $([W]::GetForegroundWindow() -eq $fg) | $(if ($ok) {'ok'} else {'FAIL'})"
+Step 3 'plugin-1' 101 1
+Step 4 'plugin-2' 102 1
+Step 5 'normal' 99 0
+[void][W]::SendMessage([W]::Tray($app.Id), 0x111, [IntPtr]3, [IntPtr]::Zero)
 $gone = $app.WaitForExit(3000)
 if (-not $gone) { $failed++; $app.Kill() }
-"STEP 5 exit | process ended $gone | overlays $(@([W]::Overlays($app.Id)).Count) | $(if ($gone) {'ok'} else {'FAIL'})"
+"STEP 6 exit | process ended $gone | overlays $(@([W]::Overlays($app.Id)).Count) | $(if ($gone) {'ok'} else {'FAIL'})"
 $form.Close()
 "failed $failed"
 exit $failed
