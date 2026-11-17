@@ -1,0 +1,9 @@
+#include "app.h"
+
+LANGUAGE 0x09, 0x01  // LANG_ENGLISH, SUBLANG_ENGLISH_US
+STRINGTABLE
+BEGIN
+    ID_NAME "DaltonicPOV"
+    ID_NORMAL "Normal vision"
+    ID_EXIT "Exit"
+END

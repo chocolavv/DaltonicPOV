@@ -1,0 +1,9 @@
+#include "dichromat_rc.h"
+
+LANGUAGE 0x09, 0x01  // LANG_ENGLISH, SUBLANG_ENGLISH_US
+STRINGTABLE
+BEGIN
+    ID_PROTAN "Protanopia"
+    ID_DEUTAN "Deuteranopia"
+    ID_TRITAN "Tritanopia"
+END
